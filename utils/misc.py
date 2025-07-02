@@ -1,14 +1,8 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the Apache License, Version 2.0.
-# The original code can be found in Meta's repositories.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# --------------------------------------------------------
-
+"""
+Several utilities and TwoHotMixUp implementation from Plain ViT-S/16 ImageNet-1K Pre-training in PyTorch 
+(https://github.com/ddgoede/vit_s_i1k_torch). Little to none changes were made in this file. 
+Originally licensed under MIT License.
+"""
 import builtins
 import datetime
 import os
@@ -17,10 +11,10 @@ import time
 import traceback
 from collections import defaultdict, deque
 from pathlib import Path
+from math import inf
 
 import torch
 import torch.distributed as dist
-from math import inf
 
 
 class SmoothedValue(object):
@@ -326,7 +320,8 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
     if norm_type == inf:
         total_norm = max(p.grad.detach().abs().max().to(device) for p in parameters)
     else:
-        total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), norm_type).to(device) for p in parameters]), norm_type)
+        total_norm = torch.norm(torch.stack(
+            [torch.norm(p.grad.detach(), norm_type).to(device) for p in parameters]), norm_type)
     return total_norm
 
 
@@ -376,3 +371,29 @@ def all_reduce_mean(x):
         return x_reduce.item()
     else:
         return x
+
+
+class TwoHotMixUp:
+    """
+    Implementation of MixUp that returns both targets as class indices instead of
+    class probabilities, matching big_vision implementation.
+    """
+
+    def __init__(self, alpha: float = 0.2):
+        self._dist = None
+        if alpha > 0:
+            self._dist = torch.distributions.Beta(alpha, alpha)
+
+    def __call__(self, images, labels):
+        if self._dist is None:
+            return images, labels
+
+        batch_size = images.size(0)
+        indices = torch.randperm(batch_size, device=images.device)
+        lam = self._dist.sample().to(images.device)
+
+        mixed_images = lam * images + (1 - lam) * images[indices]
+        targets1 = labels
+        targets2 = labels[indices]
+
+        return mixed_images, lam, targets1, targets2

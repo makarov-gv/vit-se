@@ -10,14 +10,6 @@
 # # This implementation utilizes utility functions from Meta Platforms repositories
 # # (DeiT: https://github.com/facebookresearch/deit and MAE: https://github.com/facebookresearch/mae)
 # # These functions are in the utils directory and retain their original copyright notices.
-
-# import numpy as np
-# import torch
-# import torch.nn as nn
-# import torch.backends.cudnn as cudnn
-# import torch.nn.functional as F
-# from torchvision import datasets, transforms
-
 import argparse
 from pathlib import Path
 import time
@@ -29,19 +21,13 @@ import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 import torch.nn.functional as F
-import torch.backends.cudnn as cudnn
 from torchvision import datasets, transforms
 from torchvision import transforms as T
-import numpy as np
 
 import models
 from utils import misc
 from utils.misc import NativeScalerWithGradNormCount as NativeScaler
-from utils.transforms import RandomSelectiveErasing
-# from utils import (
-#     BigVisionRandAugment, TwoHotMixUp, NativeScaler, adjust_learning_rate,
-#     misc
-# )4
+from utils.transforms import RandomSelectiveErasing, BigVisionRandAugment
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,13 +55,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='Weight decay')
 
-    ###
     parser.add_argument('--randaug_n', type=int, default=2,
-                        help='RandAugment number of ops')
+                        help='BigVisionRandAugment number of operations')
     parser.add_argument('--randaug_m', type=int, default=10,
-                        help='RandAugment magnitude')
+                        help='BigVisionRandAugment magnitude')
     parser.add_argument('--mixup_alpha', type=float, default=0.2,
-                        help='mixup alpha value')
+                        help='TwoHotMixUp alpha value')
 
     parser.add_argument('--weights', required=False, type=str,
                         help='Path to checkpoint to use (optional)')
@@ -99,15 +84,10 @@ def main(args):
     else:
         raise NotImplementedError('Only bilinear and bicubic interpolations are supported!')
 
-    # Match data augmentation parameters with big_vision
-    # - Use RandomResizedCrop with scale=(0.05, 1.0) matching big_vision's inception_crop
-    # - Use our BigVisionRandAugment with the same parameters as big_vision
-    # - Normalize to [-1, 1] range like big_vision's value_range(-1, 1)
-    # - Match big_vision's resize_small(256) | central_crop(224)
     transform_train = T.Compose([
         T.RandomResizedCrop(args.crop_size, scale=(0.05, 1.0), interpolation=interpolation),
         T.RandomHorizontalFlip(),
-        # BigVisionRandAugment(num_ops=args.randaug_n, magnitude=args.randaug_m, fill=[128, 128, 128]),
+        BigVisionRandAugment(num_ops=args.randaug_n, magnitude=args.randaug_m, fill=[128, 128, 128]),
         T.ToTensor(),
         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         RandomSelectiveErasing(ratio=(0.0, 0.99))
@@ -120,8 +100,7 @@ def main(args):
         RandomSelectiveErasing(ratio=(0.0, 0.99))
     ])
 
-    # mixup_fn = TwoHotMixUp(alpha=args.mixup_alpha) if args.mixup_alpha > 0 else None
-    mixup_fn = None
+    mixup_fn = misc.TwoHotMixUp(alpha=args.mixup_alpha) if args.mixup_alpha > 0 else None
 
     dataset_train = datasets.ImageFolder(Path(args.data_path) / 'train', transform=transform_train)
     dataset_val = datasets.ImageFolder(Path(args.data_path) / 'val', transform=transform_val)
@@ -158,7 +137,7 @@ def main(args):
         pct_start=warmup_steps / total_steps,
         cycle_momentum=False
     )
-    
+
     loss_scaler = NativeScaler()
     best_loss = torch.tensor(torch.inf).unsqueeze(0).to(device)  # mutable tensor
 
