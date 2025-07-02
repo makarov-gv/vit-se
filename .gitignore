@@ -82,3 +82,8 @@ mlartifacts/
 outputs/
 mlruns.db
 **/basic_auth.db
+
+# Project related
+
+log.txt
+*.pth

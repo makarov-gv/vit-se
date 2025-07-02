@@ -1,5 +1,13 @@
+"""
+Evaluation script. Distributed evaluation has been axed due to limited resources of the research. Some changes were 
+applied to make it more intuitive.
+
+Modified from Plain ViT-S/16 ImageNet-1K Pre-training in PyTorch (https://github.com/ddgoede/vit_s_i1k_torch).
+Originally licensed under MIT License.
+"""
 import argparse
 from pathlib import Path
+from typing import List
 
 import torch
 import torch.nn.functional as F
@@ -9,7 +17,7 @@ from torchvision import transforms as T
 import numpy as np
 
 import models
-from utils import misc
+from utils import MetricLogger
 from utils.transforms import RandomSelectiveErasing
 
 
@@ -41,18 +49,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def set_seed(args):
-    seed = args.seed + misc.get_rank()
-
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    cudnn.benchmark = True
-    np.random.seed(seed)
-
-
-def main(args):
+def main(args: argparse.Namespace):
     device = torch.device(args.device)
 
     if args.interpolation == 'bilinear':
@@ -62,7 +59,7 @@ def main(args):
     else:
         raise NotImplementedError('Only bilinear and bicubic interpolations are supported!')
 
-    set_seed(args)
+    set_seed(args.seed)
 
     transform = T.Compose([
         T.Resize(args.resize_size, interpolation=interpolation),
@@ -90,12 +87,12 @@ def main(args):
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
-    metric_logger = misc.MetricLogger(delimiter='  ')
+def evaluate(dataloader, model, device):
+    metric_logger = MetricLogger(delimiter='  ')
     header = 'Testing:'
     model.eval()
 
-    for (samples, targets) in metric_logger.log_every(data_loader, 20, header):
+    for (samples, targets) in metric_logger.log_every(dataloader, 20, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
@@ -113,13 +110,11 @@ def evaluate(data_loader, model, device):
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
 
-    metric_logger.synchronize_between_processes()
-
     print('* Acc@1: {top1.global_avg:.4f}  Acc@5: {top5.global_avg:.4f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5))
 
 
-def accuracy(output, target, topk=(1, 5)):
+def accuracy(output: torch.Tensor, target: torch.Tensor, topk: List[int] = (1, 5)):
     maxk = max(topk)
     batch_size = target.size(0)
 
@@ -133,6 +128,15 @@ def accuracy(output, target, topk=(1, 5)):
         res.append(correct_k.mul_(100.0 / batch_size))
 
     return res
+
+
+def set_seed(seed: int):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    cudnn.benchmark = True
+    np.random.seed(seed)
 
 
 if __name__ == '__main__':

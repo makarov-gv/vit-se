@@ -1,17 +1,13 @@
-# import argparse
-# import os
-# import sys
-# import datetime
-# import time
-# import math
-# import json
-# from pathlib import Path
+"""
+Train script. Distributed training has been axed due to limited resources of the research. Some changes were applied to
+make it more intuitive.
 
-# # This implementation utilizes utility functions from Meta Platforms repositories
-# # (DeiT: https://github.com/facebookresearch/deit and MAE: https://github.com/facebookresearch/mae)
-# # These functions are in the utils directory and retain their original copyright notices.
+Modified from Plain ViT-S/16 ImageNet-1K Pre-training in PyTorch (https://github.com/ddgoede/vit_s_i1k_torch).
+Originally licensed under MIT License.
+"""
 import argparse
 from pathlib import Path
+from typing import Optional, List
 import time
 import datetime
 import json
@@ -21,12 +17,14 @@ import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 import torch.nn.functional as F
+import torch.backends.cudnn as cudnn
 from torchvision import datasets, transforms
 from torchvision import transforms as T
+import numpy as np
 
 import models
-from utils import misc
-from utils.misc import NativeScalerWithGradNormCount as NativeScaler
+from utils import TwoHotMixUp, MetricLogger
+from utils import NativeScalerWithGradNormCount as NativeScaler
 from utils.transforms import RandomSelectiveErasing, BigVisionRandAugment
 
 
@@ -71,10 +69,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--device', default='cuda', type=str,
                         help='Training device')
 
+    parser.add_argument('--seed', default=66, type=int)
+
     return parser.parse_args()
 
 
-def main(args):
+def main(args: argparse.Namespace):
     device = torch.device(args.device)
 
     if args.interpolation == 'bilinear':
@@ -83,6 +83,8 @@ def main(args):
         interpolation = transforms.InterpolationMode.BICUBIC
     else:
         raise NotImplementedError('Only bilinear and bicubic interpolations are supported!')
+
+    set_seed(args.seed)
 
     transform_train = T.Compose([
         T.RandomResizedCrop(args.crop_size, scale=(0.05, 1.0), interpolation=interpolation),
@@ -100,7 +102,7 @@ def main(args):
         RandomSelectiveErasing(ratio=(0.0, 0.99))
     ])
 
-    mixup_fn = misc.TwoHotMixUp(alpha=args.mixup_alpha) if args.mixup_alpha > 0 else None
+    mixup_fn = TwoHotMixUp(alpha=args.mixup_alpha) if args.mixup_alpha > 0 else None
 
     dataset_train = datasets.ImageFolder(Path(args.data_path) / 'train', transform=transform_train)
     dataset_val = datasets.ImageFolder(Path(args.data_path) / 'val', transform=transform_val)
@@ -146,8 +148,8 @@ def main(args):
 
     for epoch in range(args.epochs):
         train_stats = train_epoch(
-            model,
             dataloader_train,
+            model,
             optimizer,
             lr_scheduler,
             device,
@@ -176,21 +178,21 @@ def main(args):
 
 
 def train_epoch(
-    model,
-    data_loader,
-    optimizer,
-    lr_scheduler,
-    device,
-    epoch,
-    loss_scaler,
-    mixup_fn,
+    dataloader: torch.utils.data.DataLoader,
+    model: torch.nn.Module,
+    optimizer: AdamW,
+    lr_scheduler: OneCycleLR,
+    device: torch.device,
+    epoch: int,
+    loss_scaler: NativeScaler,
+    mixup_fn: Optional[TwoHotMixUp],
     args: argparse.Namespace
 ):
     model.train(True)
-    metric_logger = misc.MetricLogger(delimiter='  ')
+    metric_logger = MetricLogger(delimiter='  ')
     header = 'Epoch: [{}]'.format(epoch)
 
-    for (samples, targets) in metric_logger.log_every(data_loader, 20, header):
+    for (samples, targets) in metric_logger.log_every(dataloader, 20, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
@@ -218,20 +220,24 @@ def train_epoch(
 
     torch.save(model.state_dict(), Path(args.output_dir) / 'last.pth')
 
-    metric_logger.synchronize_between_processes()
-
     print('Averaged stats:', metric_logger)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
-def validate_epoch(data_loader, model, device, best_loss: torch.Tensor, args: argparse.Namespace):
-    metric_logger = misc.MetricLogger(delimiter='  ')
+def validate_epoch(
+    dataloader: torch.utils.data.DataLoader,
+    model: torch.nn.Module,
+    device: torch.device,
+    best_loss: torch.Tensor,
+    args: argparse.Namespace
+):
+    metric_logger = MetricLogger(delimiter='  ')
     header = 'Validation:'
     model.eval()
 
-    for (samples, targets) in metric_logger.log_every(data_loader, 20, header):
+    for (samples, targets) in metric_logger.log_every(dataloader, 20, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
@@ -250,16 +256,13 @@ def validate_epoch(data_loader, model, device, best_loss: torch.Tensor, args: ar
         best_loss[0] = metric_logger.loss.global_avg
         torch.save(model.state_dict(), Path(args.output_dir) / 'best.pth')
 
-    metric_logger.synchronize_between_processes()
-
     print('* Acc@1 {top1.global_avg:.4f}  Acc@5 {top5.global_avg:.4f}  loss {losses.global_avg:.4f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def accuracy(output, target, topk=(1, 5)):
-    '''Computes the accuracy over the k top predictions for the specified values of k'''
+def accuracy(output: torch.Tensor, target: torch.Tensor, topk: List[int] = (1, 5)):
     maxk = max(topk)
     batch_size = target.size(0)
 
@@ -271,7 +274,17 @@ def accuracy(output, target, topk=(1, 5)):
     for k in topk:
         correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
+
     return res
+
+
+def set_seed(seed: int):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    cudnn.benchmark = True
+    np.random.seed(seed)
 
 
 if __name__ == '__main__':
