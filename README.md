@@ -64,7 +64,7 @@ Taking the fact that the ImageNet-1K dataset is not sparse by default into consi
 
 ### Training
 
-ViT/SE (Vision Transformer with Sparse Encoder) uses pure ViT weights for ImageNet-1K classification as checkpoints. A loader from **torchvision** downloads them automatically upon launching training or testing. The only weight that is being removed as proposed by the paper «Effective data processing in Vision Transformers» is bias in the hidden space projection convolution.
+ViT/SE (Vision Transformer with Sparse Encoder) uses pure ViT weights for ImageNet-1K classification as checkpoints. A loader from **torchvision** downloads them automatically upon launching training or testing. The only weight that is being removed as proposed by the paper "Effective data processing in Vision Transformers" is bias in the hidden space projection convolution.
 
 If you want to train ViT/SE (for example, on a different dataset) with chosen pretrained ViT variation weights, run `train.py`:
 
