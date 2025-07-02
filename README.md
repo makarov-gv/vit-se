@@ -168,7 +168,7 @@ Comparison of models with fixed sparsity ratio – 50 %:
 
 Latency and accuracy dependence on the sparsity ratio on ViT/SE-H/14:
 
-| Sparsity, %      | Latency, мс   | Acceleration, мс | Acceleration, % | Acc@1, % | Acc@5, % |
+| Sparsity, %      | Latency, ms   | Acceleration, ms | Acceleration, % | Acc@1, % | Acc@5, % |
 |------------------|---------------|------------------|-----------------|----------|----------|
 | 0                | 88.581        | –                | –               | 88.216   | 98.614   |
 | 20               | 82.028        | 6.553            | 7.398           | 86.546   | 97.820   |
