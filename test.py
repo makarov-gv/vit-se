@@ -13,7 +13,7 @@ from utils import misc
 from utils.transforms import RandomSelectiveErasing
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser('ViT/SE evaluation', add_help=True)
 
     parser.add_argument('--batch_size', default=32, type=int)
@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--device', default='cuda', type=str,
                         help='Evaluation device')
 
-    parser.add_argument('--erase_ratio', default=0.4, type=float)
+    parser.add_argument('--erase_ratio', default=0.5, type=float)
     parser.add_argument('--seed', default=66, type=int)
 
     return parser.parse_args()
@@ -91,26 +91,24 @@ def main(args):
 
 @torch.no_grad()
 def evaluate(data_loader, model, device):
-    metric_logger = misc.MetricLogger(delimiter="  ")
-    header = 'Test:'
+    metric_logger = misc.MetricLogger(delimiter='  ')
+    header = 'Testing:'
     model.eval()
 
-    for batch in metric_logger.log_every(data_loader, 20, header):
-        imgs = batch[0]
-        target = batch[-1]
-        imgs = imgs.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+    for (samples, targets) in metric_logger.log_every(data_loader, 20, header):
+        samples = samples.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
 
-        # img = T.ToPILImage()(images[0])
+        # img = T.ToPILImage()(samples[0])
         # img.show()
 
         with torch.amp.autocast('cuda'):
-            output = model(imgs)
-            loss = F.cross_entropy(output, target)
+            output = model(samples)
+            loss = F.cross_entropy(output, targets)
 
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = accuracy(output, targets, topk=(1, 5))
 
-        batch_size = imgs.shape[0]
+        batch_size = samples.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)

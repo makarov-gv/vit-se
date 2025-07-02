@@ -1,6 +1,5 @@
-
 """
-Augmentations used during experiments with Vision Transformer with Sparse Encoder (ViT/SE).
+Augmentations used during experiments with the Vision Transformer with Sparse Encoder (ViT/SE).
 """
 import random
 from typing import Tuple

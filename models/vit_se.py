@@ -7,7 +7,7 @@ Originally licensed under BSD 3-Clause License.
 """
 import math
 from collections import OrderedDict
-from functools import partial, reduce
+from functools import partial
 from typing import Callable, Optional
 
 import torch
@@ -102,7 +102,8 @@ class SparseEncoder(nn.Module):
                 sub = sub + pos
                 subs.append(self.dropout(sub))
 
-            padded_x = torch.nested.nested_tensor(subs, layout=torch.jagged).to_padded_tensor(0)
+            padded_x = torch.nested.nested_tensor(subs, layout=torch.jagged)
+            padded_x = padded_x.to_padded_tensor(0)
             padded_length = max(lengths)
 
             key_padding_mask = torch.zeros((batch_size, padded_length), dtype=torch.bool, device=x.device)
@@ -110,7 +111,8 @@ class SparseEncoder(nn.Module):
                 if length < padded_length:
                     key_padding_mask[i, length:] = True
 
-            padded_x = reduce(lambda acc, layer: layer(acc, key_padding_mask), self.layers, padded_x)
+            for layer in self.layers:
+                padded_x = layer(padded_x, key_padding_mask)
             padded_x = self.ln(padded_x)
 
             x_list = []
@@ -140,17 +142,19 @@ class SparseEncoder(nn.Module):
     #     x = x + self.pos_embedding
     #     x = self.dropout(x)
 
-    #     x = reduce(lambda acc, layer: layer(acc, key_padding_mask), self.layers, x)
+    #     for layer in self.layers:
+    #         x = layer(x, key_padding_mask)
     #     x = self.ln(x)
     #     x = x.masked_fill(key_padding_mask.unsqueeze(-1), 0)
 
     #     return x
-    
+
     # def forward(self, x: torch.Tensor):  # default encoder
     #     x = x + self.pos_embedding
     #     x = self.dropout(x)
 
-    #     x = reduce(lambda acc, layer: layer(acc), self.layers, x)
+    #     for layer in self.layers:
+    #         x = layer(x)
     #     x = self.ln(x)
 
     #     return x

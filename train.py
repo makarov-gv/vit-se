@@ -20,8 +20,14 @@
 
 import argparse
 from pathlib import Path
+import time
+import datetime
+import json
+import math
 
 import torch
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import OneCycleLR
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 from torchvision import datasets, transforms
@@ -30,6 +36,7 @@ import numpy as np
 
 import models
 from utils import misc
+from utils.misc import NativeScalerWithGradNormCount as NativeScaler
 from utils.transforms import RandomSelectiveErasing
 # from utils import (
 #     BigVisionRandAugment, TwoHotMixUp, NativeScaler, adjust_learning_rate,
@@ -37,33 +44,32 @@ from utils.transforms import RandomSelectiveErasing
 # )4
 
 
-def get_args_parser():
-    parser = argparse.ArgumentParser('ViT training', add_help=False)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser('ViT/SE training', add_help=True)
 
-    # Training parameters
-    parser.add_argument('--epochs', default=90, type=int)
-    parser.add_argument('--batch_size', default=128, type=int,
-                        help='Per-GPU batch size (effective batch size is batch_size * num_gpus)')
+    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--batch_size', default=128, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
 
-    # Model parameters
-    parser.add_argument('--model_name', default='vit_small_patch16_224', type=str,
-                    help='Name of the ViT model to use from timm')
-    parser.add_argument('--input_size', default=224, type=int,
-                    help='Images input size for data augmentation (should match the model\'s expected input size)')
     parser.add_argument('--experiment_name', type=str, required=True,
-                    help='Name of the experiment, used for saving checkpoints and logs')
+                        help='Name of the experiment, used for saving checkpoints and logs')
+    parser.add_argument('--model_name', default='vit_se_h_14', type=str,
+                        help='Name of the ViT/SE model to use')
+    parser.add_argument('--resize_size', default=518, type=int,
+                        help='256 for ViT/SE-Base, 242 for ViT/SE-Large, 518 for ViT/SE-Huge')
+    parser.add_argument('--crop_size', default=518, type=int,
+                        help='224 for ViT/SE-Base and ViT-Large, 518 for ViT/SE-Huge')
+    parser.add_argument('--interpolation', default='bicubic', type=str,
+                        help='"bilinear" for ViT/SE-Base and ViT/SE-Large, "bicubic" for ViT/SE-Huge')
 
-    # Optimization parameters
-    parser.add_argument('--lr', type=float, default=1e-3,
-                        help='base learning rate')
+    parser.add_argument('--lr', type=float, default=1e-6,
+                        help='Base learning rate')
     parser.add_argument('--warmup_epochs', type=int, default=5,
-                        help='epochs to warmup LR')
-    parser.add_argument('--min_lr', type=float, default=0.0,
-                        help='lower lr bound for cyclic schedulers')
-    parser.add_argument('--weight_decay', type=float, default=0.1,
-                        help='weight decay')
+                        help='Amount of warmup epochs')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='Weight decay')
 
-    # Augmentation parameters
+    ###
     parser.add_argument('--randaug_n', type=int, default=2,
                         help='RandAugment number of ops')
     parser.add_argument('--randaug_m', type=int, default=10,
@@ -71,57 +77,58 @@ def get_args_parser():
     parser.add_argument('--mixup_alpha', type=float, default=0.2,
                         help='mixup alpha value')
 
-    # Dataset parameters
-    parser.add_argument('--data_path', default='/path/to/imagenet',
-                        help='dataset path')
-    parser.add_argument('--output_dir', default='.',
-                        help='path where to save checkpoints')
-    parser.add_argument('--device', default='cuda',
-                        help='device to use for training')
-    parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--weights', required=False, type=str,
+                        help='Path to checkpoint to use (optional)')
+    parser.add_argument('--data_path', default='/path/to/imagenet-1k', type=str,
+                        help='Path to dataset')
+    parser.add_argument('--output_dir', default='.', type=str,
+                        help='Path to save checkpoints')
+    parser.add_argument('--device', default='cuda', type=str,
+                        help='Training device')
 
-
-    return parser
+    return parser.parse_args()
 
 
 def main(args):
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
-    print("{}".format(args).replace(', ', ',\n'))
     device = torch.device(args.device)
-    set_seed(args)
+
+    if args.interpolation == 'bilinear':
+        interpolation = transforms.InterpolationMode.BILINEAR
+    elif args.interpolation == 'bicubic':
+        interpolation = transforms.InterpolationMode.BICUBIC
+    else:
+        raise NotImplementedError('Only bilinear and bicubic interpolations are supported!')
 
     # Match data augmentation parameters with big_vision
     # - Use RandomResizedCrop with scale=(0.05, 1.0) matching big_vision's inception_crop
     # - Use our BigVisionRandAugment with the same parameters as big_vision
     # - Normalize to [-1, 1] range like big_vision's value_range(-1, 1)
     # - Match big_vision's resize_small(256) | central_crop(224)
-    transform_train = transforms.Compose([
-        transforms.RandomResizedCrop(args.input_size, scale=(0.05, 1.0), interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.RandomHorizontalFlip(),
+    transform_train = T.Compose([
+        T.RandomResizedCrop(args.crop_size, scale=(0.05, 1.0), interpolation=interpolation),
+        T.RandomHorizontalFlip(),
         # BigVisionRandAugment(num_ops=args.randaug_n, magnitude=args.randaug_m, fill=[128, 128, 128]),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        T.ToTensor(),
+        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        RandomSelectiveErasing(ratio=(0.0, 0.99))
     ])
-    transform_val = transforms.Compose([
-        transforms.Resize(256, interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.CenterCrop(args.input_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    transform_val = T.Compose([
+        T.Resize(args.resize_size, interpolation=interpolation),
+        T.CenterCrop(args.crop_size),
+        T.ToTensor(),
+        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        RandomSelectiveErasing(ratio=(0.0, 0.99))
     ])
 
     # mixup_fn = TwoHotMixUp(alpha=args.mixup_alpha) if args.mixup_alpha > 0 else None
+    mixup_fn = None
 
-    # Create datasets
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, 'val'), transform=transform_val)
+    dataset_train = datasets.ImageFolder(Path(args.data_path) / 'train', transform=transform_train)
+    dataset_val = datasets.ImageFolder(Path(args.data_path) / 'val', transform=transform_val)
 
-    # Set up samplers for both training and validation
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
-    # Create dataloaders
-    data_loader_train = torch.utils.data.DataLoader(
+    dataloader_train = torch.utils.data.DataLoader(
         dataset_train,
         sampler=sampler_train,
         batch_size=args.batch_size,
@@ -129,7 +136,7 @@ def main(args):
         pin_memory=True,
         drop_last=True,
     )
-    data_loader_val = torch.utils.data.DataLoader(
+    dataloader_val = torch.utils.data.DataLoader(
         dataset_val,
         sampler=sampler_val,
         batch_size=args.batch_size,
@@ -138,33 +145,39 @@ def main(args):
         drop_last=False
     )
 
-    # Create model
-    model = create_plain_vit_small(model_name=args.model_name)
+    model = getattr(models, args.model_name)(pretrained=args.weights is None, weights=args.weights)
     model = model.to(device)
 
-    model_without_ddp = model
-
-    # Define optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    total_steps = len(dataloader_train) * args.epochs
+    warmup_steps = len(dataloader_train) * args.warmup_epochs
+    lr_scheduler = OneCycleLR(
+        optimizer,
+        max_lr=args.lr,
+        total_steps=total_steps,
+        pct_start=warmup_steps / total_steps,
+        cycle_momentum=False
+    )
+    
     loss_scaler = NativeScaler()
+    best_loss = torch.tensor(torch.inf).unsqueeze(0).to(device)  # mutable tensor
 
-    print(f"Number of training images: {len(dataset_train)}")
-    print(f"Number of validation images: {len(dataset_val)}")
-
-    print(f"Start training for {args.epochs} epochs")
+    print(f'Started training for {args.epochs} epochs')
     start_time = time.time()
 
     for epoch in range(args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-
-        train_stats = train_one_epoch(
-            model, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            mixup_fn, args=args,
+        train_stats = train_epoch(
+            model,
+            dataloader_train,
+            optimizer,
+            lr_scheduler,
+            device,
+            epoch,
+            loss_scaler,
+            mixup_fn,
+            args
         )
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the model on {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        test_stats = validate_epoch(dataloader_val, model, device, best_loss, args)
 
         log_stats = {
             **{f'train_{k}': v for k, v in train_stats.items()},
@@ -172,102 +185,102 @@ def main(args):
             'epoch': epoch,
         }
 
-        if args.output_dir and misc.is_main_process():
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
-    # Save model after training is complete
-    if args.output_dir:
-        misc.save_model(
-            args=args, model=model, model_without_ddp=model_without_ddp,
-            optimizer=optimizer, loss_scaler=loss_scaler, epoch=epoch)
+        with open(Path(args.output_dir) / 'log.txt', mode='a', encoding='utf-8') as f:
+            f.write(json.dumps(log_stats) + '\n')
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    if device == 'cuda':
+        torch.cuda.empty_cache()
 
-def train_one_epoch(model, data_loader,
-                    optimizer, device, epoch, loss_scaler,
-                    mixup_fn=None, args=None):
+
+def train_epoch(
+    model,
+    data_loader,
+    optimizer,
+    lr_scheduler,
+    device,
+    epoch,
+    loss_scaler,
+    mixup_fn,
+    args: argparse.Namespace
+):
     model.train(True)
-    metric_logger = misc.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger = misc.MetricLogger(delimiter='  ')
     header = 'Epoch: [{}]'.format(epoch)
 
-    for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, 20, header)):
-        # we use a per iteration (instead of per epoch) lr scheduler
-        lr = adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
-
+    for (samples, targets) in metric_logger.log_every(data_loader, 20, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
         if mixup_fn is not None:
-            # For MixUp with two hot targets
             samples, lam, targets1, targets2 = mixup_fn(samples, targets)
-
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(samples)
                 loss = lam * F.cross_entropy(outputs, targets1) + (1 - lam) * F.cross_entropy(outputs, targets2)
         else:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(samples)
                 loss = F.cross_entropy(outputs, targets)
 
         loss_value = loss.item()
-
         if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            sys.exit(1)
+            raise RuntimeError('Loss is {}, stopping training'.format(loss_value))
 
         optimizer.zero_grad()
-        loss_scaler(loss, optimizer, clip_grad=1.0,
-                    parameters=model.parameters())
+        loss_scaler(loss, optimizer, clip_grad=1.0, parameters=model.parameters())
+        lr_scheduler.step()
 
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
-        metric_logger.update(lr=lr)
 
-    # gather the stats from all processes
+    torch.save(model.state_dict(), Path(args.output_dir) / 'last.pth')
+
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+
+    print('Averaged stats:', metric_logger)
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
-    metric_logger = misc.MetricLogger(delimiter="  ")
-    header = 'Test:'
+def validate_epoch(data_loader, model, device, best_loss: torch.Tensor, args: argparse.Namespace):
+    metric_logger = misc.MetricLogger(delimiter='  ')
+    header = 'Validation:'
     model.eval()
 
-    for batch in metric_logger.log_every(data_loader, 20, header):
-        images = batch[0]
-        target = batch[-1]
-        images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+    for (samples, targets) in metric_logger.log_every(data_loader, 20, header):
+        samples = samples.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
 
-        with torch.cuda.amp.autocast():
-            output = model(images)
-            loss = F.cross_entropy(output, target)
+        with torch.amp.autocast('cuda'):
+            output = model(samples)
+            loss = F.cross_entropy(output, targets)
 
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = accuracy(output, targets, topk=(1, 5))
 
-        batch_size = images.shape[0]
+        batch_size = samples.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
 
-    # gather the stats from all processes
+    if metric_logger.loss.global_avg < best_loss[0]:
+        best_loss[0] = metric_logger.loss.global_avg
+        torch.save(model.state_dict(), Path(args.output_dir) / 'best.pth')
+
     metric_logger.synchronize_between_processes()
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
+
+    print('* Acc@1 {top1.global_avg:.4f}  Acc@5 {top5.global_avg:.4f}  loss {losses.global_avg:.4f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def accuracy(output, target, topk=(1,)):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
+def accuracy(output, target, topk=(1, 5)):
+    '''Computes the accuracy over the k top predictions for the specified values of k'''
     maxk = max(topk)
     batch_size = target.size(0)
 
@@ -282,20 +295,8 @@ def accuracy(output, target, topk=(1,)):
     return res
 
 
-def set_seed(args):
-    # fix the seed for reproducibility
-    seed = args.seed + misc.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-    cudnn.benchmark = True
-
-
 if __name__ == '__main__':
-    args = get_args_parser().parse_args()
+    args = parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
