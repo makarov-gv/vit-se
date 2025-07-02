@@ -1,12 +1,12 @@
 # Vision Transformer with Sparse Encoder
 
-|![](figures/encoder1.png)|![](figures/encoder2.png)|
-|:-:|:-:|
-|Single sparse image processing|Batched sparse images processing|
+<p align="center">
+  <img src="figures/encoder.png" />
+</p>
 
 ## Abstract
 
-(Under peer-review) Vision Transformers have become a decent alternative to convolutional neural networks in computer vision and pattern recognition tasks. These machine learning models gradually transform the hidden vector representation of an image using an attention mechanism, sequentially aggregating information between all its elements. This allows for the detection of patterns in the input data. However, attention is an algorithm with quadratic complexity. Its processing speed depends on the number of embeddings that interpret the input image in
+Vision Transformers have become a decent alternative to convolutional neural networks in computer vision and pattern recognition tasks. These machine learning models gradually transform the hidden vector representation of an image using an attention mechanism, sequentially aggregating information between all its elements. This allows for the detection of patterns in the input data. However, attention is an algorithm with quadratic complexity. Its processing speed depends on the number of embeddings that interpret the input image in
 the hidden space. In tasks where images are sparse, processing empty data can significantly slow down the neural network. This paper proposes a Sparse Encoder that allows excluding it from the attention mechanism’s receptive field. Through its use in the Vision Transformer, significant acceleration is achieved, depending on the sparsity of the input data.
 
 ## Prerequisite
@@ -55,19 +55,19 @@ Experiments were conducted on the ImageNet-1K dataset. To download it, follow th
 
     Notice that class labels (*n01440764*, etc.) are in subfolders' names instead of images filenames' postfixes. Folder tree structure like this is required for **torchvision** *ImageFolder* generic dataloader.
 
-Considering the ImageNet-1K dataset is not sparse by default, a "sparsification" augmentation is implemented which erases random vertical/horizontal lines until certain ratio is reached. Though not true sparsity, it still helps to study effectiveness of the Sparse Encoder.
+Taking the fact that the ImageNet-1K dataset is not sparse by default into consideration, a "sparsification" augmentation is implemented which erases random vertical/horizontal lines until certain ratio is reached. Though not true sparsity, it still helps to study effectiveness of the Sparse Encoder.
 
-|<img src="figures/augmentation.png" width="50%">|
-|:-:|
-|"Sparsification" augmentation: 25%, 50% and 75%|
+<p align="center">
+  <img src="figures/augmentation.png" width="50%">
+</p>
 
 ## Usage
 
 ### Training
 
-ViT/SE (Vision Transformer with Sparse Encoder) uses pure ViT weights as checkpoint or for ImageNet-1K evaluation. A loader from **torchvision** downloads them automatically upon launching training or testing. The only weight that is being removed as proposed by the paper "Effective data processing in Vision Transformers" is bias in hidden space projection convolution.
+ViT/SE (Vision Transformer with Sparse Encoder) uses pure ViT weights for ImageNet-1K classification as checkpoints. A loader from **torchvision** downloads them automatically upon launching training or testing. The only weight that is being removed as proposed by the paper «Effective data processing in Vision Transformers» is bias in the hidden space projection convolution.
 
-If you want to train ViT/Se anyway (for example, on different dataset) with chosen pretrained ViT variation, run `train.py`:
+If you want to train ViT/SE (for example, on a different dataset) with chosen pretrained ViT variation weights, run `train.py`:
 
 ```bash
 python3 train.py [--epochs EPOCHS] [--batch_size BATCH_SIZE] [--num_workers NUM_WORKERS] --experiment_name EXPERIMENT_NAME [--model_name MODEL_NAME] [--resize_size RESIZE_SIZE] [--crop_size CROP_SIZE] [--interpolation INTERPOLATION] [--lr LR] [--warmup_epochs WARMUP_EPOCHS] [--weight_decay WEIGHT_DECAY] [--randaug_n RANDAUG_N] [--randaug_m RANDAUG_M] [--mixup_alpha MIXUP_ALPHA] [--weights WEIGHTS] [--data_path DATA_PATH] [--output_dir OUTPUT_DIR] [--device DEVICE] [--seed SEED]
@@ -81,11 +81,11 @@ options:
   --model_name MODEL_NAME
                         Name of the ViT/SE model to use
   --resize_size RESIZE_SIZE
-                        256 for ViT/SE-Base, 242 for ViT/SE-Large, 518 for ViT/SE-Huge
+                        256 for ViT/SE-B, 242 for ViT/SE-L, 518 for ViT/SE-H
   --crop_size CROP_SIZE
-                        224 for ViT/SE-Base and ViT-Large, 518 for ViT/SE-Huge
+                        224 for ViT/SE-B and ViT-L, 518 for ViT/SE-H
   --interpolation INTERPOLATION
-                        "bilinear" for ViT/SE-Base and ViT/SE-Large, "bicubic" for ViT/SE-Huge
+                        "bilinear" for ViT/SE-B and ViT/SE-L, "bicubic" for ViT/SE-H
   --lr LR               Base learning rate
   --warmup_epochs WARMUP_EPOCHS
                         Amount of warmup epochs
@@ -100,13 +100,12 @@ options:
   --weights WEIGHTS     Path to checkpoint to use (optional)
   --data_path DATA_PATH
                         Path to dataset
-  --output_dir OUTPUT_DIR
-                        Path to save checkpoints
+  --output_dir OUTPUT_DIR Path to save checkpoints
   --device DEVICE       Training device
   --seed SEED
 ```
 
-Example for launching ViT/SE-H/14 with recommended default settings would look like this:
+Example for launching a training of ViT/SE-H/14 with recommended default settings would look like this:
 
 ```bash
 python3 train.py --experiment_name custom_vit_se_h_14 --model_name vit_se_h_14 --resize_size 518 --crop_size 518 --interpolation bicubic --data_path /path/to/imagenet-1k --output_dir .
@@ -115,6 +114,37 @@ python3 train.py --experiment_name custom_vit_se_h_14 --model_name vit_se_h_14 -
 During training in the end of each epoch, a checkpoint is saved with the name `last.pth`. A validation loss tracker is being used to also preserve `best.pth` model in case of overfitting. Metrics are being logged into `log.txt`.
 
 ### Evaluation
+
+If you want to evaluate ViT/SE with chosen pretrained ViT variation weights or your custom weights that were saved after
+running `train.py` accordingly, run `test.py`:
+
+```bash
+python3 test.py [--batch_size BATCH_SIZE] [--num_workers NUM_WORKERS] [--model_name MODEL_NAME] [--resize_size RESIZE_SIZE] [--crop_size CROP_SIZE] [--interpolation INTERPOLATION] [--weights WEIGHTS] [--data_path DATA_PATH] [--device DEVICE] [--erase_ratio ERASE_RATIO] [--seed SEED]
+
+options:
+  --batch_size BATCH_SIZE
+  --num_workers NUM_WORKERS
+  --model_name MODEL_NAME
+                        Name of the ViT/SE model to use
+  --resize_size RESIZE_SIZE
+                        256 for ViT/SE-B, 242 for ViT/SE-L, 518 for ViT/SE-H
+  --crop_size CROP_SIZE
+                        224 for ViT/SE-B and ViT-L, 518 for ViT/SE-H
+  --interpolation INTERPOLATION
+                        "bilinear" for ViT/SE-B and ViT/SE-L, "bicubic" for ViT/SE-H
+  --weights WEIGHTS     Path to weights of trained model (optional)
+  --data_path DATA_PATH
+                        Path to dataset
+  --device DEVICE       Evaluation device
+  --erase_ratio ERASE_RATIO
+  --seed SEED
+```
+
+Example for launching an evaluation of ViT/SE-H/14 with recommended default settings would look like this:
+
+```bash
+python3 test.py --model_name vit_se_h_14 --resize_size 518 --crop_size 518 --interpolation bicubic --data_path /path/to/imagenet-1k
+```
 
 ## Results
 

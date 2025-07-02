@@ -30,11 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--model_name', default='vit_se_h_14', type=str,
                         help='Name of the ViT/SE model to use')
     parser.add_argument('--resize_size', default=518, type=int,
-                        help='256 for ViT/SE-Base, 242 for ViT/SE-Large, 518 for ViT/SE-Huge')
+                        help='256 for ViT/SE-B, 242 for ViT/SE-L, 518 for ViT/SE-H')
     parser.add_argument('--crop_size', default=518, type=int,
-                        help='224 for ViT/SE-Base and ViT-Large, 518 for ViT/SE-Huge')
+                        help='224 for ViT/SE-B and ViT-L, 518 for ViT/SE-H')
     parser.add_argument('--interpolation', default='bicubic', type=str,
-                        help='"bilinear" for ViT/SE-Base and ViT/SE-Large, "bicubic" for ViT/SE-Huge')
+                        help='"bilinear" for ViT/SE-B and ViT/SE-L, "bicubic" for ViT/SE-H')
 
     parser.add_argument('--weights', required=False, type=str,
                         help='Path to weights of trained model (optional)')
