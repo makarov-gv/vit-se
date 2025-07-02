@@ -105,7 +105,7 @@ options:
   --seed SEED
 ```
 
-Example for launching a training of ViT/SE-H/14 with recommended default settings would look like this:
+Example for launching the training of ViT/SE-H/14 with recommended default settings would look like this:
 
 ```bash
 python3 train.py --experiment_name custom_vit_se_h_14 --model_name vit_se_h_14 --resize_size 518 --crop_size 518 --interpolation bicubic --data_path /path/to/imagenet-1k --output_dir .
@@ -140,7 +140,7 @@ options:
   --seed SEED
 ```
 
-Example for launching an evaluation of ViT/SE-H/14 with recommended default settings would look like this:
+Example for launching the evaluation of ViT/SE-H/14 with recommended default settings would look like this:
 
 ```bash
 python3 test.py --model_name vit_se_h_14 --resize_size 518 --crop_size 518 --interpolation bicubic --data_path /path/to/imagenet-1k
@@ -148,13 +148,34 @@ python3 test.py --model_name vit_se_h_14 --resize_size 518 --crop_size 518 --int
 
 ## Results
 
-Original pretrained DEM CNN model weights will not be distributed as it is used in proprietary software. The results, however, can be replicated and surpassed using this repository specifically for your data.
+Due to lack of new parametrized operations, no new weights are to be distributed. Theoretically, ViT/SE will train differently from that of original model if the input data is sparse due to attention masking. Later on pretrained weights on widely recognized open sparse image benchmarks might be released.
 
-This model achieves global mAP: 42.02% and mAP@50: 67.52% on test dataset with various data of different quality. However, when provided with a dataset of DEMs with resolution of 2 cm/pixel, evaluation metrics are better - global mAP: 52.03%, mAP@50: 77.57%.
+As per paper, evaluation experiments were conducted on single NVIDIA GeForce RTX 3070 Ti with batch size being 32 samples. Masked ViT is the original ViT with empty patches masked using *attention mask*.
 
-Parameters for training original model and predicting with it are by default in `config.py` (classes are also in there).
+Comparison of models with fixed sparsity ratio – 50 %:
 
-It is worth noting that DEM CNN usage is not limited to detecting only road obstacles. Model can be used to detect any objects on DEMs, as long as they are located on flat surfaces and are not noisy. Just rasterize regions of interest during inference with such flat surfaces and make predictions on them to get similar results.
+| Model             | Latency, ms   | Acceleration, ms | Acceleration, % | Acc@1, % | Acc@5, % |
+|-------------------|---------------|------------------|-----------------|----------|----------|
+| Masked ViT–B/16   | 1.594         | –                | –               | 63.568   | 83.834   |
+| Masked ViT–B/32   | 1.372         | –                | –               | 44.706   | 67.546   |
+| Masked ViT–L/16   | 5.475         | –                | –               | 64.838   | 84.918   |
+| Masked ViT–L/32   | 1.594         | –                | –               | 46.664   | 69.054   |
+| Masked ViT–H/14   | 90.241        | –                | –               | 78.552   | 93.576   |
+| ViT/SE–B/16       | 1.500         | 0.094            | 5.900           | 63.570   | 83.844   |
+| ViT/SE–B/32       | 1.269         | 0.103            | 6.462           | 44.708   | 67.540   |
+| ViT/SE–L/16       | 4.647         | 0.828            | 15.123          | 64.840   | 84.916   |
+| ViT/SE–L/32       | 1.628         | -0.034           | -2.133          | 46.666   | 69.046   |
+| ViT/SE–H/14       | 60.994        | 29.247           | 32.410          | 78.558   | 93.580   |
+
+Latency and accuracy dependence on the sparsity ratio on ViT/SE-H/14:
+
+| Sparsity, %      | Latency, мс   | Acceleration, мс | Acceleration, % | Acc@1, % | Acc@5, % |
+|------------------|---------------|------------------|-----------------|----------|----------|
+| 0                | 88.581        | –                | –               | 88.216   | 98.614   |
+| 20               | 82.028        | 6.553            | 7.398           | 86.546   | 97.820   |
+| 40               | 70.666        | 17.915           | 20.224          | 82.308   | 95.794   |
+| 60               | 53.497        | 35.084           | 39.607          | 72.320   | 90.032   |
+| 80               | 33.572        | 55.009           | 62.100          | 42.278   | 63.756   |
 
 ## Citation
 
