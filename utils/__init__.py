@@ -1,7 +1,6 @@
 """
-Some of the utilities and TwoHotMixUp implementation from Plain ViT-S/16 ImageNet-1K Pre-training in PyTorch. Little to
-none changes were made in this file. As well as transformations for images with sparsification augmentation to sparsify
-ImageNet or other datasets.
+Some of the utilities and TwoHotMixUp implementation from Plain ViT-S/16 ImageNet-1K Pre-training in PyTorch. As well as
+transformations for images with sparsification augmentation to sparsify ImageNet-1K or similar classification datasets.
 
 Modified from Plain ViT-S/16 ImageNet-1K Pre-training in PyTorch (https://github.com/ddgoede/vit_s_i1k_torch).
 Originally licensed under MIT License.

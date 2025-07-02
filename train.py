@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser('ViT/SE training', add_help=True)
 
     parser.add_argument('--epochs', default=100, type=int)
-    parser.add_argument('--batch_size', default=128, type=int)
+    parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
 
     parser.add_argument('--experiment_name', type=str, required=True,
