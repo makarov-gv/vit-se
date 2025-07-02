@@ -6,8 +6,7 @@
 
 ## Abstract
 
-Vision Transformers have become a decent alternative to convolutional neural networks in computer vision and pattern recognition tasks. These machine learning models gradually transform the hidden vector representation of an image using an attention mechanism, sequentially aggregating information between all its elements. This allows for the detection of patterns in the input data. However, attention is an algorithm with quadratic complexity. Its processing speed depends on the number of embeddings that interpret the input image in
-the hidden space. In tasks where images are sparse, processing empty data can significantly slow down the neural network. This paper proposes a Sparse Encoder that allows excluding it from the attention mechanism’s receptive field. Through its use in the Vision Transformer, significant acceleration is achieved, depending on the sparsity of the input data.
+Vision Transformers have become a decent alternative to convolutional neural networks in computer vision and pattern recognition tasks. These machine learning models gradually transform the hidden vector representation of an image using an attention mechanism, sequentially aggregating information between all its elements. This allows for the detection of patterns in the input data. However, attention is an algorithm with quadratic complexity. Its processing speed depends on the number of embeddings that interpret the input image in the hidden space. In tasks where images are sparse, processing empty data can significantly slow down the neural network. This paper proposes a Sparse Encoder that allows excluding it from the attention mechanism’s receptive field. Through its use in the Vision Transformer, significant acceleration is achieved, depending on the sparsity of the input data.
 
 ## Prerequisite
 
@@ -58,7 +57,7 @@ Experiments were conducted on the ImageNet-1K dataset. To download it, follow th
 Taking the fact that the ImageNet-1K dataset is not sparse by default into consideration, a "sparsification" augmentation is implemented which erases random vertical/horizontal lines until certain ratio is reached. Though not true sparsity, it still helps to study effectiveness of the Sparse Encoder.
 
 <p align="center">
-  <img src="figures/augmentation.png" width="50%">
+  <img src="figures/augmentation.png">
 </p>
 
 ## Usage
@@ -150,7 +149,7 @@ python3 test.py --model_name vit_se_h_14 --resize_size 518 --crop_size 518 --int
 
 Due to lack of new parametrized operations, no new weights are to be distributed. Theoretically, ViT/SE will train differently from that of original model if the input data is sparse due to attention masking. Later on pretrained weights on widely recognized open sparse image benchmarks might be released.
 
-As per paper, evaluation experiments were conducted on single NVIDIA GeForce RTX 3070 Ti with batch size being 32 samples. Masked ViT is the original ViT with empty patches masked using *attention mask*.
+As per the paper, evaluation experiments were conducted on a single NVIDIA GeForce RTX 3070 Ti with batch size being 32 samples. Masked ViT is the original ViT with empty patches masked using an *attention mask*.
 
 Comparison of models with fixed sparsity ratio – 50 %:
 
