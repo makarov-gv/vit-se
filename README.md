@@ -1,16 +1,7 @@
 # Vision Transformer with Sparse Encoder
 
 <p align="center">
-  <img
-    src="figures/encoder.png"
-    style="
-      filter:
-        drop-shadow(1px 0 0 white)
-        drop-shadow(-1px 0 0 white)
-        drop-shadow(0 1px 0 white)
-        drop-shadow(0 -1px 0 white);
-    "
-  />
+  <img src="figures/encoder.png" />
 </p>
 
 ## Abstract
@@ -74,16 +65,7 @@ Experiments were conducted on the ImageNet-1K dataset. To download it, follow th
 Taking the fact that the ImageNet-1K dataset is not sparse by default into consideration, a patch-aware "sparsification" augmentation is implemented. At each application, one of three mask types is sampled with equal probability: line masks, symmetric padding-like masks, and irregular blob masks. The target sparsity is controlled on the patch grid, so the number of excluded tokens matches the requested ratio for the chosen ViT patch size. Though not true sparsity, it still helps to study effectiveness of the Sparse Encoder.
 
 <p align="center">
-  <img 
-    src="figures/augmentation.png"
-    style="
-      filter:
-        drop-shadow(1px 0 0 white)
-        drop-shadow(-1px 0 0 white)
-        drop-shadow(0 1px 0 white)
-        drop-shadow(0 -1px 0 white);
-    "
-    >
+  <img src="figures/augmentation.png">
 </p>
 
 ## Usage
