@@ -17,6 +17,19 @@ from torchvision.models.vision_transformer import \
     ViT_H_14_Weights
 
 
+def _load_pretrained(model: VisionTransformer, state_dict: dict[str, torch.Tensor]) -> None:
+    target_classes = model.num_classes
+    head_weight = state_dict.get('heads.head.weight')
+    if head_weight is not None and head_weight.shape[0] != target_classes:
+        state_dict = state_dict.copy()
+        state_dict.pop('heads.head.weight', None)
+        state_dict.pop('heads.head.bias', None)
+        model.load_state_dict(state_dict, strict=False)
+        return
+
+    model.load_state_dict(state_dict)
+
+
 def vit_se_b_16(pretrained: bool = True, weights: Optional[str] = None, **kwargs: Any) -> VisionTransformer:
     """
     Constructs a VIT/SE-B/16 based on original VIT-B/16 architecture as per https://arxiv.org/abs/2010.11929. Bias in 
@@ -41,7 +54,7 @@ def vit_se_b_16(pretrained: bool = True, weights: Optional[str] = None, **kwargs
 
     if 'conv_proj.bias' in state_dict.keys():
         state_dict.pop('conv_proj.bias')
-    model.load_state_dict(state_dict)
+    _load_pretrained(model, state_dict)
 
     return model
 
@@ -70,7 +83,7 @@ def vit_se_b_32(pretrained: bool = True, weights: Optional[str] = None, **kwargs
 
     if 'conv_proj.bias' in state_dict.keys():
         state_dict.pop('conv_proj.bias')
-    model.load_state_dict(state_dict)
+    _load_pretrained(model, state_dict)
 
     return model
 
@@ -99,7 +112,7 @@ def vit_se_l_16(pretrained: bool = True, weights: Optional[str] = None, **kwargs
 
     if 'conv_proj.bias' in state_dict.keys():
         state_dict.pop('conv_proj.bias')
-    model.load_state_dict(state_dict)
+    _load_pretrained(model, state_dict)
 
     return model
 
@@ -128,7 +141,7 @@ def vit_se_l_32(pretrained: bool = True, weights: Optional[str] = None, **kwargs
 
     if 'conv_proj.bias' in state_dict.keys():
         state_dict.pop('conv_proj.bias')
-    model.load_state_dict(state_dict)
+    _load_pretrained(model, state_dict)
 
     return model
 
@@ -157,6 +170,6 @@ def vit_se_h_14(pretrained: bool = True, weights: Optional[str] = None, **kwargs
 
     if 'conv_proj.bias' in state_dict.keys():
         state_dict.pop('conv_proj.bias')
-    model.load_state_dict(state_dict)
+    _load_pretrained(model, state_dict)
 
     return model

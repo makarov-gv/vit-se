@@ -64,11 +64,13 @@ class SparseEncoder(nn.Module):
         mlp_dim: int,
         dropout: float,
         attention_dropout: float,
+        encoder_mode: str = "sparse",
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
         self.seq_length = seq_length
         self.hidden_dim = hidden_dim
+        self.encoder_mode = encoder_mode
 
         self.pos_embedding = nn.Parameter(torch.empty(1, seq_length, hidden_dim).normal_(std=0.02))  # from BERT
         self.dropout = nn.Dropout(dropout)
@@ -87,6 +89,33 @@ class SparseEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         torch._assert(x.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {x.shape}")
+
+        if self.encoder_mode == "masked":
+            key_padding_mask = (x == 0).all(dim=-1)
+
+            x = x + self.pos_embedding
+            x = self.dropout(x)
+
+            for layer in self.layers:
+                x = layer(x, key_padding_mask)
+            x = self.ln(x)
+            x = x.masked_fill(key_padding_mask.unsqueeze(-1), 0)
+
+            return x
+
+        if self.encoder_mode == "default":
+            x = x + self.pos_embedding
+            x = self.dropout(x)
+
+            for layer in self.layers:
+                x = layer(x)
+            x = self.ln(x)
+
+            return x
+
+        if self.encoder_mode != "sparse":
+            raise ValueError(f"Unknown encoder mode: {self.encoder_mode}")
+
         batch_size = x.shape[0]
         sparse_mask = (x == 0).all(dim=-1)
         # sparse_mask = (x <= 0).all(dim=-1)
@@ -176,6 +205,7 @@ class VisionTransformer(nn.Module):
         mlp_dim: int,
         dropout: float = 0.0,
         attention_dropout: float = 0.0,
+        encoder_mode: str = "sparse",
         num_classes: int = 1000,
         representation_size: Optional[int] = None,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
@@ -207,6 +237,7 @@ class VisionTransformer(nn.Module):
             mlp_dim,
             dropout,
             attention_dropout,
+            encoder_mode,
             norm_layer,
         )
         self.seq_length = seq_length

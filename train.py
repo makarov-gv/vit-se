@@ -25,7 +25,12 @@ import numpy as np
 import models
 from utils import TwoHotMixUp, MetricLogger
 from utils import NativeScalerWithGradNormCount as NativeScaler
-from utils.transforms import RandomSelectiveErasing, BigVisionRandAugment
+from utils.transforms import (
+    RandomSelectiveErasing,
+    BigVisionRandAugment,
+    ThresholdBackgroundZeroing,
+    NormalizePreservingZeros,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +44,10 @@ def parse_args() -> argparse.Namespace:
                         help='Name of the experiment, used for saving checkpoints and logs')
     parser.add_argument('--model_name', default='vit_se_h_14', type=str,
                         help='Name of the ViT/SE model to use')
+    parser.add_argument('--encoder_mode', default='sparse', type=str, choices=('sparse', 'masked', 'default'),
+                        help='Encoder forward mode: sparse, masked, or default')
+    parser.add_argument('--num_classes', default=1000, type=int,
+                        help='Number of output classes')
     parser.add_argument('--resize_size', default=518, type=int,
                         help='256 for ViT/SE-B, 242 for ViT/SE-L, 518 for ViT/SE-H')
     parser.add_argument('--crop_size', default=518, type=int,
@@ -59,6 +68,12 @@ def parse_args() -> argparse.Namespace:
                         help='BigVisionRandAugment magnitude')
     parser.add_argument('--mixup_alpha', type=float, default=0.2,
                         help='TwoHotMixUp alpha value')
+    parser.add_argument('--erase_ratio_min', type=float, default=0.0,
+                        help='Lower bound for RandomSelectiveErasing ratio')
+    parser.add_argument('--erase_ratio_max', type=float, default=0.99,
+                        help='Upper bound for RandomSelectiveErasing ratio')
+    parser.add_argument('--background_threshold', type=float, default=-1.0,
+                        help='Apply ThresholdBackgroundZeroing after ToTensor if non-negative')
 
     parser.add_argument('--weights', required=False, type=str,
                         help='Path to checkpoint to use (optional)')
@@ -85,22 +100,36 @@ def main(args: argparse.Namespace):
         raise NotImplementedError('Only bilinear and bicubic interpolations are supported!')
 
     set_seed(args.seed)
+    patch_size = get_patch_size(args.model_name)
 
-    transform_train = T.Compose([
+    normalize_cls = NormalizePreservingZeros if args.background_threshold >= 0 else T.Normalize
+
+    train_ops = [
         T.RandomResizedCrop(args.crop_size, scale=(0.05, 1.0), interpolation=interpolation),
         T.RandomHorizontalFlip(),
         BigVisionRandAugment(num_ops=args.randaug_n, magnitude=args.randaug_m, fill=[128, 128, 128]),
         T.ToTensor(),
-        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        RandomSelectiveErasing(ratio=(0.0, 0.99))
+    ]
+    if args.background_threshold >= 0:
+        train_ops.append(ThresholdBackgroundZeroing(threshold=args.background_threshold))
+    train_ops.extend([
+        normalize_cls(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        RandomSelectiveErasing(ratio=(args.erase_ratio_min, args.erase_ratio_max), patch_size=patch_size)
     ])
-    transform_val = T.Compose([
+    transform_train = T.Compose(train_ops)
+
+    val_ops = [
         T.Resize(args.resize_size, interpolation=interpolation),
         T.CenterCrop(args.crop_size),
         T.ToTensor(),
-        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        RandomSelectiveErasing(ratio=(0.0, 0.99))
+    ]
+    if args.background_threshold >= 0:
+        val_ops.append(ThresholdBackgroundZeroing(threshold=args.background_threshold))
+    val_ops.extend([
+        normalize_cls(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        RandomSelectiveErasing(ratio=(args.erase_ratio_min, args.erase_ratio_max), patch_size=patch_size)
     ])
+    transform_val = T.Compose(val_ops)
 
     mixup_fn = TwoHotMixUp(alpha=args.mixup_alpha) if args.mixup_alpha > 0 else None
 
@@ -126,7 +155,12 @@ def main(args: argparse.Namespace):
         drop_last=False
     )
 
-    model = getattr(models, args.model_name)(pretrained=args.weights is None, weights=args.weights)
+    model = getattr(models, args.model_name)(
+        pretrained=args.weights is None,
+        weights=args.weights,
+        encoder_mode=args.encoder_mode,
+        num_classes=args.num_classes,
+    )
     model = model.to(device)
 
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -263,7 +297,7 @@ def validate_epoch(
 
 
 def accuracy(output: torch.Tensor, target: torch.Tensor, topk: List[int] = (1, 5)):
-    maxk = max(topk)
+    maxk = min(max(topk), output.size(1))
     batch_size = target.size(0)
 
     _, pred = output.topk(maxk, 1, True, True)
@@ -272,7 +306,8 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk: List[int] = (1, 5
 
     res = []
     for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+        effective_k = min(k, output.size(1))
+        correct_k = correct[:effective_k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
 
     return res
@@ -285,6 +320,13 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
     cudnn.benchmark = True
     np.random.seed(seed)
+
+
+def get_patch_size(model_name: str) -> int:
+    try:
+        return int(model_name.split('_')[-1])
+    except (ValueError, IndexError) as e:
+        raise ValueError(f'Unable to infer patch size from model name: {model_name}') from e
 
 
 if __name__ == '__main__':

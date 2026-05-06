@@ -18,7 +18,7 @@ import numpy as np
 
 import models
 from utils import MetricLogger
-from utils.transforms import RandomSelectiveErasing
+from utils.transforms import RandomSelectiveErasing, ThresholdBackgroundZeroing, NormalizePreservingZeros
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +29,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument('--model_name', default='vit_se_h_14', type=str,
                         help='Name of the ViT/SE model to use')
+    parser.add_argument('--encoder_mode', default='sparse', type=str, choices=('sparse', 'masked', 'default'),
+                        help='Encoder forward mode: sparse, masked, or default')
+    parser.add_argument('--num_classes', default=1000, type=int,
+                        help='Number of output classes')
     parser.add_argument('--resize_size', default=518, type=int,
                         help='256 for ViT/SE-B, 242 for ViT/SE-L, 518 for ViT/SE-H')
     parser.add_argument('--crop_size', default=518, type=int,
@@ -44,6 +48,8 @@ def parse_args() -> argparse.Namespace:
                         help='Evaluation device')
 
     parser.add_argument('--erase_ratio', default=0.5, type=float)
+    parser.add_argument('--background_threshold', default=-1.0, type=float,
+                        help='Apply ThresholdBackgroundZeroing after ToTensor if non-negative')
     parser.add_argument('--seed', default=66, type=int)
 
     return parser.parse_args()
@@ -60,14 +66,22 @@ def main(args: argparse.Namespace):
         raise NotImplementedError('Only bilinear and bicubic interpolations are supported!')
 
     set_seed(args.seed)
+    patch_size = get_patch_size(args.model_name)
 
-    transform = T.Compose([
+    normalize_cls = NormalizePreservingZeros if args.background_threshold >= 0 else T.Normalize
+
+    ops = [
         T.Resize(args.resize_size, interpolation=interpolation),
         T.CenterCrop(args.crop_size),
         T.ToTensor(),
-        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        RandomSelectiveErasing(ratio=(args.erase_ratio, args.erase_ratio))
+    ]
+    if args.background_threshold >= 0:
+        ops.append(ThresholdBackgroundZeroing(threshold=args.background_threshold))
+    ops.extend([
+        normalize_cls(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        RandomSelectiveErasing(ratio=(args.erase_ratio, args.erase_ratio), patch_size=patch_size)
     ])
+    transform = T.Compose(ops)
     dataset = datasets.ImageFolder(Path(args.data_path) / 'val', transform=transform)
 
     sampler = torch.utils.data.SequentialSampler(dataset)
@@ -80,7 +94,12 @@ def main(args: argparse.Namespace):
         drop_last=False
     )
 
-    model = getattr(models, args.model_name)(pretrained=args.weights is None, weights=args.weights)
+    model = getattr(models, args.model_name)(
+        pretrained=args.weights is None,
+        weights=args.weights,
+        encoder_mode=args.encoder_mode,
+        num_classes=args.num_classes,
+    )
     model = model.to(device)
 
     evaluate(dataloader, model, device)
@@ -115,7 +134,7 @@ def evaluate(dataloader, model, device):
 
 
 def accuracy(output: torch.Tensor, target: torch.Tensor, topk: List[int] = (1, 5)):
-    maxk = max(topk)
+    maxk = min(max(topk), output.size(1))
     batch_size = target.size(0)
 
     _, pred = output.topk(maxk, 1, True, True)
@@ -124,7 +143,8 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk: List[int] = (1, 5
 
     res = []
     for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+        effective_k = min(k, output.size(1))
+        correct_k = correct[:effective_k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
 
     return res
@@ -137,6 +157,13 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
     cudnn.benchmark = True
     np.random.seed(seed)
+
+
+def get_patch_size(model_name: str) -> int:
+    try:
+        return int(model_name.split('_')[-1])
+    except (ValueError, IndexError) as e:
+        raise ValueError(f'Unable to infer patch size from model name: {model_name}') from e
 
 
 if __name__ == '__main__':

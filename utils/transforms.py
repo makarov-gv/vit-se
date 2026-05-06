@@ -17,7 +17,10 @@ import torchvision.transforms.functional as F
 
 class RandomSelectiveErasing(object):
     """
-    Sparsification augmentation as described in the paper.
+    Patch-aware sparsification augmentation as described in the paper.
+
+    One of several sparsification modes is sampled with equal probability and
+    then parameterized to match the target sparsity ratio on the patch grid.
     """
 
     def __init__(
@@ -25,85 +28,269 @@ class RandomSelectiveErasing(object):
         p: float = 1.0,
         ratio: Tuple[float, float] = (0.2, 0.4),
         width: Tuple[int, int] = (16, 48),
+        patch_size: int = 16,
+        modes: Tuple[str, ...] = ('line', 'padding', 'blob'),
+        blob_seeds: Tuple[int, int] = (1, 3),
         max_attempts: int = 200
     ):
         self.p = p
         self.ratio = ratio
         self.width = width
+        self.patch_size = patch_size
+        self.modes = modes
+        self.blob_seeds = blob_seeds
         self.max_attempts = max_attempts
 
     def __call__(self, img: torch.Tensor) -> torch.Tensor:
         if random.random() > self.p:
             return img
 
-        _, w, h = img.shape
-        area = h * w
-        pixels = random.uniform(self.ratio[0], self.ratio[1]) * area
+        _, h, w = img.shape
+        if h % self.patch_size != 0 or w % self.patch_size != 0:
+            raise ValueError('Image size must be divisible by patch size for patch-aware sparsification!')
 
-        mask = torch.ones((h, w), device=img.device)
-        mask_pixels = 0
+        grid_h = h // self.patch_size
+        grid_w = w // self.patch_size
+        total_patches = grid_h * grid_w
 
-        attempts = 0
-        while mask_pixels < pixels and attempts < self.max_attempts:
-            attempts += 1
+        target_ratio = random.uniform(self.ratio[0], self.ratio[1])
+        target_patches = int(round(target_ratio * total_patches))
+        target_patches = max(0, min(total_patches, target_patches))
 
-            is_horizontal = random.random() < 0.5
-            line_width = random.randint(self.width[0], self.width[1])
+        if target_patches == 0:
+            return img
+        if target_patches == total_patches:
+            return torch.zeros_like(img)
 
-            if is_horizontal:
-                y = random.randint(0, h - line_width)
+        mode = random.choice(self.modes)
+        if mode == 'padding':
+            return self._apply_padding(img, target_patches)
+        if mode == 'blob':
+            zero_mask = self._build_blob_mask(grid_h, grid_w, target_patches)
+            return self._apply_zero_mask(img, zero_mask)
 
-                # if random.random() < 0.3:
-                #     if random.random() < 0.5:
-                #         y = 0
-                #     else:
-                #         y = h - line_width
+        zero_mask = self._build_line_mask(grid_h, grid_w, target_patches)
+        return self._apply_zero_mask(img, zero_mask)
 
-                mask_pixels_ = w * line_width - torch.sum(mask[y:y+line_width, :] == 0).item()
-                if mask_pixels + mask_pixels_ > pixels:
-                    needed_pixels = int(pixels - mask_pixels)
-                    if needed_pixels <= 0:
-                        break
+    def _apply_zero_mask(self, img: torch.Tensor, zero_mask: torch.Tensor) -> torch.Tensor:
+        pixel_mask = (~zero_mask).repeat_interleave(self.patch_size, dim=0).repeat_interleave(self.patch_size, dim=1)
+        return img * pixel_mask.to(device=img.device, dtype=img.dtype).unsqueeze(0)
 
-                    line_width_ = max(1, needed_pixels // w)
-                    if line_width_ >= self.width[0]:
-                        line_width = min(line_width_, line_width)
-                        mask_pixels_ = w * line_width - torch.sum(mask[y:y+line_width, :] == 0).item()
-                    else:
-                        continue
+    def _build_line_mask(self, grid_h: int, grid_w: int, target_patches: int) -> torch.Tensor:
+        zero_mask = torch.zeros((grid_h, grid_w), dtype=torch.bool)
+        current = 0
 
-                mask[y:y+line_width, :] = 0
-                mask_pixels += mask_pixels_
+        while current < target_patches:
+            remaining = target_patches - current
+            horizontal = random.random() < 0.5
+            added = self._paint_line_segment(zero_mask, remaining, horizontal)
 
+            if added == 0:
+                added = self._paint_line_segment(zero_mask, remaining, not horizontal)
+
+            if added == 0:
+                coords = torch.nonzero(~zero_mask, as_tuple=False)
+                choice = coords[torch.randperm(coords.shape[0])[:remaining]]
+                zero_mask[choice[:, 0], choice[:, 1]] = True
+                break
+
+            current += added
+
+        return zero_mask
+
+    def _paint_line_segment(self, zero_mask: torch.Tensor, remaining: int, horizontal: bool) -> int:
+        grid_h, grid_w = zero_mask.shape
+        preferred_min_thickness = max(1, math.ceil(self.width[0] / self.patch_size))
+        max_thickness = max(1, math.ceil(self.width[1] / self.patch_size))
+        max_thickness = min(max_thickness, grid_h if horizontal else grid_w)
+
+        best = None
+        best_added = 0
+        best_aspect = -1.0
+        best_preferred = False
+
+        for thickness in range(1, max_thickness + 1):
+            if horizontal:
+                for y in range(grid_h - thickness + 1):
+                    for length in range(grid_w, 0, -1):
+                        for x in range(grid_w - length + 1):
+                            view = zero_mask[y:y + thickness, x:x + length]
+                            added = int((~view).sum().item())
+                            if added == 0 or added > remaining:
+                                continue
+
+                            aspect = length / thickness
+                            preferred = thickness >= preferred_min_thickness
+                            if (
+                                added > best_added
+                                or (added == best_added and preferred and not best_preferred)
+                                or (added == best_added and preferred == best_preferred and aspect > best_aspect)
+                            ):
+                                best = (y, x, thickness, length)
+                                best_added = added
+                                best_aspect = aspect
+                                best_preferred = preferred
             else:
-                x = random.randint(0, w - line_width)
+                for x in range(grid_w - thickness + 1):
+                    for length in range(grid_h, 0, -1):
+                        for y in range(grid_h - length + 1):
+                            view = zero_mask[y:y + length, x:x + thickness]
+                            added = int((~view).sum().item())
+                            if added == 0 or added > remaining:
+                                continue
 
-                # if random.random() < 0.3:
-                #     if random.random() < 0.5:
-                #         x = 0
-                #     else:
-                #         x = w - line_width
+                            aspect = length / thickness
+                            preferred = thickness >= preferred_min_thickness
+                            if (
+                                added > best_added
+                                or (added == best_added and preferred and not best_preferred)
+                                or (added == best_added and preferred == best_preferred and aspect > best_aspect)
+                            ):
+                                best = (y, x, length, thickness)
+                                best_added = added
+                                best_aspect = aspect
+                                best_preferred = preferred
 
-                mask_pixels_ = h * line_width - torch.sum(mask[:, x:x+line_width] == 0).item()
-                if mask_pixels + mask_pixels_ > pixels:
-                    needed_pixels = int(pixels - mask_pixels)
-                    if needed_pixels <= 0:
-                        break
+        if best is None:
+            return 0
 
-                    line_width_ = max(1, needed_pixels // h)
-                    if line_width_ >= self.width[0]:
-                        line_width = min(line_width_, line_width)
-                        mask_pixels_ = h * line_width - torch.sum(mask[:, x:x+line_width] == 0).item()
-                    else:
-                        continue
+        y, x, height, width = best
+        view = zero_mask[y:y + height, x:x + width]
+        added = int((~view).sum().item())
+        zero_mask[y:y + height, x:x + width] = True
 
-                mask[:, x:x+line_width] = 0
-                mask_pixels += mask_pixels_
+        return added
 
-        mask = mask.unsqueeze(0).expand_as(img)
-        img = img * mask
+    def _build_blob_mask(self, grid_h: int, grid_w: int, target_patches: int) -> torch.Tensor:
+        zero_mask = torch.zeros((grid_h, grid_w), dtype=torch.bool)
 
-        return img
+        seeds_max = min(self.blob_seeds[1], target_patches)
+        seeds_min = min(self.blob_seeds[0], seeds_max)
+        seed_count = random.randint(seeds_min, seeds_max)
+
+        available = [(y, x) for y in range(grid_h) for x in range(grid_w)]
+        for y, x in random.sample(available, seed_count):
+            zero_mask[y, x] = True
+
+        frontier = set()
+        for y, x in torch.nonzero(zero_mask, as_tuple=False).tolist():
+            frontier.update(self._neighbors(y, x, grid_h, grid_w))
+        frontier = {cell for cell in frontier if not zero_mask[cell[0], cell[1]]}
+
+        while int(zero_mask.sum().item()) < target_patches:
+            if frontier:
+                cells = list(frontier)
+                weights = []
+                for y, x in cells:
+                    neighbors = self._neighbors(y, x, grid_h, grid_w)
+                    masked_neighbors = sum(int(zero_mask[ny, nx].item()) for ny, nx in neighbors)
+                    weights.append((masked_neighbors + 1) ** 2)
+                y, x = random.choices(cells, weights=weights, k=1)[0]
+                frontier.discard((y, x))
+            else:
+                cells = torch.nonzero(~zero_mask, as_tuple=False)
+                y, x = cells[random.randrange(cells.shape[0])].tolist()
+
+            zero_mask[y, x] = True
+            for ny, nx in self._neighbors(y, x, grid_h, grid_w):
+                if not zero_mask[ny, nx]:
+                    frontier.add((ny, nx))
+
+        return zero_mask
+
+    def _neighbors(self, y: int, x: int, grid_h: int, grid_w: int) -> List[Tuple[int, int]]:
+        neighbors = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < grid_h and 0 <= nx < grid_w:
+                    neighbors.append((ny, nx))
+        return neighbors
+
+    def _apply_padding(self, img: torch.Tensor, target_patches: int) -> torch.Tensor:
+        _, h, w = img.shape
+        grid_h = h // self.patch_size
+        grid_w = w // self.patch_size
+
+        candidates = []
+        for pad_cols in range(grid_w + 1):
+            masked = pad_cols * grid_h
+            candidates.append(('width', pad_cols, abs(masked - target_patches)))
+        for pad_rows in range(grid_h + 1):
+            masked = pad_rows * grid_w
+            candidates.append(('height', pad_rows, abs(masked - target_patches)))
+
+        best_error = min(error for _, _, error in candidates)
+        axis, padding_units, _ = random.choice([candidate for candidate in candidates if candidate[2] == best_error])
+
+        canvas = torch.zeros_like(img)
+        if axis == 'width':
+            keep_cols = max(1, grid_w - padding_units)
+            keep_w = keep_cols * self.patch_size
+            resized = F.resize(img, [h, keep_w], antialias=True)
+            offset = (w - keep_w) // 2
+            canvas[:, :, offset:offset + keep_w] = resized
+        else:
+            keep_rows = max(1, grid_h - padding_units)
+            keep_h = keep_rows * self.patch_size
+            resized = F.resize(img, [keep_h, w], antialias=True)
+            offset = (h - keep_h) // 2
+            canvas[:, offset:offset + keep_h, :] = resized
+
+        return canvas
+
+
+class ThresholdBackgroundZeroing(object):
+    """
+    Zero out low-intensity background regions using a channel-mean threshold.
+
+    Intended for preprocessing naturally sparse images such as MRI slices.
+    """
+
+    def __init__(self, threshold: float = 25.0):
+        self.threshold = threshold
+
+    def __call__(self, img: Any) -> Any:
+        if isinstance(img, torch.Tensor):
+            return self._apply_tensor(img)
+
+        tensor = F.pil_to_tensor(img)
+        tensor = self._apply_tensor(tensor)
+        return F.to_pil_image(tensor)
+
+    def _apply_tensor(self, img: torch.Tensor) -> torch.Tensor:
+        if img.dim() != 3:
+            raise ValueError('Expected image tensor of shape (C, H, W)!')
+
+        result = img.clone()
+        mean_map = result.to(torch.float32).mean(dim=0, keepdim=True)
+        threshold = self.threshold / 255.0 if result.is_floating_point() and float(result.max()) <= 1.5 else self.threshold
+        return result.masked_fill(mean_map < threshold, 0)
+
+
+class NormalizePreservingZeros(object):
+    """
+    Apply channel-wise normalization while keeping fully zero background pixels unchanged.
+
+    This is useful for sparse pipelines where background regions are explicitly zeroed
+    before normalization and must remain zero afterwards.
+    """
+
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, img: torch.Tensor) -> torch.Tensor:
+        if not isinstance(img, torch.Tensor):
+            raise TypeError('NormalizePreservingZeros expects a tensor input.')
+        if img.dim() != 3:
+            raise ValueError('Expected image tensor of shape (C, H, W)!')
+
+        zero_mask = img.eq(0).all(dim=0, keepdim=True)
+        normalized = F.normalize(img, mean=self.mean, std=self.std)
+        return normalized.masked_fill(zero_mask, 0)
 
 
 class BigVisionRandAugment(v2.RandAugment):
